@@ -3,14 +3,17 @@ from numpy.linalg import solve
 import numpy as np
 
 # Load the dataset
-df = pd.read_csv('~/Downloads/current.csv')
+df = pd.read_csv('https://www.stlouisfed.org/-/media/project/frbstl/stlouisfed/research/fred-md/monthly/current.csv?sc_lang=en&hash=80445D12401C59CF716410F3F7863B64')
 
 # Clean the DataFrame by removing the row with transformation codes
 df_cleaned = df.drop(index=0)
 df_cleaned.reset_index(drop=True, inplace=True)
+df_cleaned['sasdate'] = pd.to_datetime(df_cleaned['sasdate'], format='%m/%d/%Y')
 
 ## df_cleaned contains the data cleaned
 df_cleaned
+print(df_cleaned)
+
 
 # Extract transformation codes
 transformation_codes = df.iloc[0, 1:].to_frame().reset_index()
@@ -57,7 +60,11 @@ def apply_transformation(series, code):
 for series_name, code in transformation_codes.values:
     df_cleaned[series_name] = apply_transformation(df_cleaned[series_name].astype(float), float(code))
 
+df_cleaned = df_cleaned[2:]
+df_cleaned.reset_index(drop=True, inplace=True)
 df_cleaned.head()
+print (df_cleaned.head())
+
 
 ############################################################################################################
 ## Plot transformed series
@@ -135,6 +142,8 @@ X_T = X.iloc[-1:].values
 ## and convert to numpy array
 y = y.iloc[num_lags:-num_leads].values
 X = X.iloc[num_lags:-num_leads].values
+X_T
+print (X_T)
 
 ## Import the solve function from numpy.linalg
 from numpy.linalg import solve
@@ -145,3 +154,66 @@ beta_ols = solve(X.T @ X, X.T @ y)
 ## Produce the One step ahead forecast
 ## % change month-to-month of INDPRO
 forecast = X_T@beta_ols*100
+forecast
+print (forecast)
+def calculate_forecast(df_cleaned, p = 4, H = [1,4,8], end_date = '12/1/1999',target = 'INDPRO', xvars = ['CPIAUCSL', 'TB3MS']):
+
+    ## Subset df_cleaned to use only data up to end_date
+    rt_df = df_cleaned[df_cleaned['sasdate'] <= pd.Timestamp(end_date)]
+    ## Get the actual values of target at different steps ahead
+    Y_actual = []
+    for h in H:
+        os = pd.Timestamp(end_date) + pd.DateOffset(months=h)
+        Y_actual.append(df_cleaned[df_cleaned['sasdate'] == os][target]*100)
+        ## Now Y contains the true values at T+H (multiplying * 100)
+
+    Yraw = rt_df[target]
+    Xraw = rt_df[xvars]
+
+    X = pd.DataFrame()
+    ## Add the lagged values of Y
+    for lag in range(0,p):
+        # Shift each column in the DataFrame and name it with a lag suffix
+        X[f'{target}_lag{lag}'] = Yraw.shift(lag)
+
+    for col in Xraw.columns:
+        for lag in range(0,p):
+            X[f'{col}_lag{lag}'] = Xraw[col].shift(lag)
+    
+    ## Add a column on ones (for the intercept)
+    X.insert(0, 'Ones', np.ones(len(X)))
+    
+    ## Save last row of X (converted to numpy)
+    X_T = X.iloc[-1:].values
+
+    ## While the X will be the same, Y needs to be leaded differently
+    Yhat = []
+    for h in H:
+        y_h = Yraw.shift(-h)
+        ## Subset getting only rows of X and y from p+1 to h-1
+        y = y_h.iloc[p:-h].values
+        X_ = X.iloc[p:-h].values
+        # Solving for the OLS estimator beta: (X'X)^{-1} X'Y
+        beta_ols = solve(X_.T @ X_, X_.T @ y)
+        ## Produce the One step ahead forecast
+        ## % change month-to-month INDPRO
+        Yhat.append(X_T@beta_ols*100)
+
+    ## Now calculate the forecasting error and return
+
+    return np.array(Y_actual) - np.array(Yhat)
+
+t0 = pd.Timestamp('12/1/1999')
+e = []
+T = []
+for j in range(0, 10):
+    t0 = t0 + pd.DateOffset(months=1)
+    print(f'Using data up to {t0}')
+    ehat = calculate_forecast(df_cleaned, p = 4, H = [1,4,8], end_date = t0)
+    e.append(ehat.flatten())
+    T.append(t0)
+
+## Create a pandas DataFrame from the list
+edf = pd.DataFrame(e)
+## Calculate the RMSFE, that is, the square root of the MSFE
+np.sqrt(edf.apply(np.square).mean())
